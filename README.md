@@ -2,14 +2,10 @@
 
 A professional, multi-screen monitoring dashboard for the **ESP32-2432S028R** (Cheap Yellow Display). This project integrates with **Node-RED** via **MQTT** to display real-time energy, solar, and environmental data.
 
-<img width="729" height="517" alt="image" src="https://github.com/user-attachments/assets/fb8132e0-fccd-4c89-be97-74e2a28cfe62" />
-
-<img width="651" height="467" alt="image" src="https://github.com/user-attachments/assets/4868c893-df8b-49a9-906a-300099a67caf" />
-
-<img width="646" height="437" alt="image" src="https://github.com/user-attachments/assets/a783496f-1015-4867-8f81-d2e605a1db29" />
-
-
-<img width="647" height="460" alt="image" src="https://github.com/user-attachments/assets/d0625ab6-e6c6-4920-81fe-9f7393ed6cb3" />
+![Dashboard](images/Start_20260328.jpg)
+![Dashboard](images/Table_20260328.jpg)
+![Dashboard](images/Oscil_20260328.jpg)
+![Dashboard](images/gauges_20260328.jpg)
 
 ---
 
