@@ -21,7 +21,7 @@
 #include "include/secrets.h"
 
 
-// --- PIN DEFINITIES ---
+// -- PIN DEFINITIES --
 #define XPT2046_IRQ 36
 #define XPT2046_MOSI 32
 #define XPT2046_MISO 39
