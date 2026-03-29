@@ -62,7 +62,8 @@ struct LogEntry { float t; int p; int s; String time; };
 LogEntry activityLog[5];
 int historyIdx = 0, logIdx = 0;
 
-unsigned long laatsteTouch = 0, laatsteLDR = 0;
+unsigned long laatsteTouch = 0, laatsteLDR = 0, laatsteMqttPoging = 0, ldrStartTijd = 0;
+bool ldrBezig = false;
 
 void setLedKleur(bool r, bool g, bool b) {
   digitalWrite(LED_R, r ? LOW : HIGH);
@@ -196,7 +197,7 @@ void setupOTA() {
     tft.fillScreen(TFT_GREEN);
     tft.setTextColor(TFT_BLACK);
     tft.drawString("UPDATE SUCCESS!", 160, 120);
-    delay(1000);
+    // Geen delay nodig, de herstart volgt direct
   });
   ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
     int percentage = (progress / (total / 100));
@@ -251,7 +252,6 @@ void setup() {
   ts.begin(mySpi); ts.setRotation(1);
   tft.init(); tft.setRotation(1); tft.invertDisplay(true);
   WiFi.begin(ssid, password);
-  while (WiFi.status() != WL_CONNECTED) delay(500);
   setupOTA();
   client.setServer(mqtt_server, 1883); client.setCallback(callback);
   tekenHome();
@@ -259,10 +259,23 @@ void setup() {
 
 void loop() {
   ArduinoOTA.handle();
-  if (!client.connected()) {
-    if (client.connect("ESP32_CYD_Client")) { client.subscribe(topic_data); client.subscribe(topic_alarm); }
+
+  // Non-blocking WiFi en MQTT beheer
+  if (WiFi.status() == WL_CONNECTED) {
+    if (!client.connected()) {
+      unsigned long nu = millis();
+      if (nu - laatsteMqttPoging > 5000) { // Probeer elke 5 seconden
+        laatsteMqttPoging = nu;
+        if (client.connect("ESP32_CYD_Client")) { 
+          client.subscribe(topic_data); 
+          client.subscribe(topic_alarm); 
+        }
+      }
+    } else {
+      client.loop();
+    }
   }
-  client.loop();
+
   if (digitalRead(XPT2046_IRQ) == LOW && ts.touched()) {
     TS_Point p = ts.getPoint();
     int tx = map(p.x, 260, 3623, 0, 320);
@@ -281,8 +294,18 @@ void loop() {
       laatsteTouch = millis();
     }
   } 
-  else if (millis() - laatsteLDR > 1000) {
-    pinMode(LDR_PIN, ANALOG); delay(2); ldrWaarde = analogRead(LDR_PIN); pinMode(LDR_PIN, INPUT);
-    laatsteLDR = millis();
+  // Non-blocking LDR uitlezing (Pin 39 is gedeeld met MISO)
+  unsigned long nu = millis();
+  if (!ldrBezig && nu - laatsteLDR > 1000) {
+    pinMode(LDR_PIN, ANALOG);
+    ldrStartTijd = nu;
+    ldrBezig = true;
+  }
+  
+  if (ldrBezig && nu - ldrStartTijd >= 2) {
+    ldrWaarde = analogRead(LDR_PIN);
+    pinMode(LDR_PIN, INPUT); // Terugzetten voor SPI/Touch
+    ldrBezig = false;
+    laatsteLDR = nu;
   }
 }
