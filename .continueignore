@@ -1,0 +1,8 @@
+# Voorkom dat de agent buiten het project kijkt (hoewel dit standaard al zo is)
+../
+~/.*
+/etc/
+
+# Voorkom dat de agent gevoelige lokale bestanden leest
+.env
+secrets.h  # (Alleen als je NIET wilt dat hij je WiFi-wachtwoorden leest!)
