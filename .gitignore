@@ -4,5 +4,5 @@
 .vscode/launch.json
 .vscode/ipch
 include/secrets.h
-.continue/rules
+.continue/rules/CYD_rules.md
 .aider*
