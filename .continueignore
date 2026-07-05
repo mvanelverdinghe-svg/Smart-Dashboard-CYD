@@ -1,8 +1,13 @@
-# Voorkom dat de agent buiten het project kijkt (hoewel dit standaard al zo is)
+# Voorkom dat de agent naar andere mappen op je Ubuntu systeem gaat
 ../
-~/.*
 /etc/
+/home/*/.ssh/
 
-# Voorkom dat de agent gevoelige lokale bestanden leest
+# Beveilig je wachtwoorden
+secrets.h
 .env
-secrets.h  # (Alleen als je NIET wilt dat hij je WiFi-wachtwoorden leest!)
+
+# Zorg dat de agent de lokale config WEL kan lezen, 
+# maar negeer de zware cache mappen
+.pio/
+.aider.tags.cache.v4/
