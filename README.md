@@ -18,10 +18,12 @@ A professional, multi-screen monitoring dashboard for the **ESP32-2432S028R** (C
   - **Meters**: Visual gauges for daily Gas (m³) and Electricity (kWh) usage.
 - **Smart Connectivity**:
   - Full **MQTT** integration for data and alarms.
-  - **OTA (Over-The-Air)** updates with a visual progress bar on the display.
+  - USB uploads through `esptool` and OTA uploads through `espota`.
+  - Exclusive **OTA display mode** with progress, success, and error feedback.
   - Connection status indicator (Green/Red LED on screen).
 - **Hardware Optimizations**:
-  - **LDR/MISO Fix**: Hybrid switching on Pin 39 to allow both Touch and Light Sensor usage.
+  - **LDR/MISO Fix**: IRQ-guarded hybrid switching on GPIO39, followed by explicit touch-SPI recovery.
+  - Non-blocking periodic LDR measurements that remain mutually exclusive with touch handling.
   - **RGB LED Alarm**: Visual red alert when power consumption exceeds thresholds.
   - **Calibrated Touch**: Precise navigation using the XPT2046 controller.
 
@@ -46,18 +48,23 @@ A professional, multi-screen monitoring dashboard for the **ESP32-2432S028R** (C
 ---
 
 
-## ⚙️ Setup & Configuration
+## ⚙️ Setup and configuration
 
-### 1. WiFi & MQTT
-Update the following constants in `src/main.cpp`:
+### WiFi and MQTT
+
+Configure the credentials used by `main.cpp` in `include/secrets.h`:
+
 ```cpp
-const char* ssid = "YOUR_WIFI_SSID";
-const char* password = "YOUR_WIFI_PASSWORD";
-const char* mqtt_server = "Your MQTT server";
-2. Node-RED Integration
-The ESP32 expects a JSON payload on the esp32/cyd/data topic:
-code
-JSON
+#define SECRET_SSID "YOUR_WIFI_SSID"
+#define SECRET_PASS "YOUR_WIFI_PASSWORD"
+#define SECRET_MQTT "YOUR_MQTT_SERVER"
+```
+
+### Node-RED integration
+
+The dashboard expects a JSON payload on the `esp32/cyd/data` topic:
+
+```json
 {
   "temp": 12.5,
   "power": 1500,
@@ -66,12 +73,40 @@ JSON
   "delek": 8.4,
   "time": "14:30"
 }
-🔄 OTA Updates
-To update the firmware wirelessly:
-Ensure your computer is on the same network.
-Select the network port CYD-Smart-Dashboard in your IDE.
-Upload. The screen will show a blue progress bar during the process.
-📝 License
-This project is for personal home automation use. Feel free to modify and expand! I am gratefull to
-the people who already published (Paul Stoffregen and others)info about this board, and helped me
-overcome some issues concerning the hardware (pin 39 for LDR and Touch) in particular. 
+```
+
+Alarm commands use the existing `esp32/cyd/alarm` topic.
+
+## 🔌 Upload environments
+
+- `cyd`: USB upload using `esptool`.
+- `cyd_ota`: network upload using `espota` to the configured `upload_port`.
+
+Build either environment without uploading:
+
+```bash
+pio run -e cyd
+pio run -e cyd_ota
+```
+
+Upload over USB:
+
+```bash
+pio run -e cyd -t upload
+```
+
+Upload over WiFi:
+
+```bash
+pio run -e cyd_ota -t upload
+```
+
+During a real OTA upload the TFT shows `OTA UPDATE`, a progress bar and percentage. MQTT screen
+updates, touch navigation, and LDR measurements are temporarily suspended. At completion it shows
+`Upload voltooid`; OTA errors display their error code before the normal screen is restored.
+
+## 📝 License
+
+This project is for personal home automation use. Feel free to modify and expand it. Thanks to Paul
+Stoffregen and others whose published information about the CYD hardware helped resolve the shared
+GPIO39 LDR/touch-MISO behavior.

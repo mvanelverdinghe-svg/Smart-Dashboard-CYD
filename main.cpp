@@ -1,13 +1,19 @@
 /*******************************************************************************
  * PROJECT: ESP32 CYD (Cheap Yellow Display) - Smart Home Dashboard
  * HARDWARE: ESP32-2432S028R (2.8" ILI9341 TFT + XPT2046 Touch)
- * VERSION: 2.0 (MQTT, OTA, 4-Screen UI)
+ * VERSION: 2.1 (MQTT, USB/OTA updates, 4-screen UI)
  * 
  * --- HARDWARE CONFIGURATION ---
  * 1. DISPLAY: ILI9341 (SPI) | Rotation: 1 (Landscape) | Inversion: ON
  * 2. TOUCH: XPT2046 (SPI) | IRQ: Pin 36 | CS: Pin 33
- * 3. LDR (Light Sensor): Pin 39 (Shared with MISO)
+ * 3. LDR: Pin 39, shared with XPT2046 MISO via IRQ-guarded hybrid switching
  * 4. RGB LED: Red: 4, Green: 17, Blue: 16 (Active Low: LOW=ON, HIGH=OFF)
+ *
+ * --- CURRENT FIRMWARE ---
+ * - Non-blocking WiFi, MQTT, touch and periodic LDR handling
+ * - Explicit touch-SPI recovery after each LDR analogRead() on shared GPIO39
+ * - Exclusive OTA display mode with progress, success and error feedback
+ * - PlatformIO environments: cyd (USB/esptool) and cyd_ota (network/espota)
  *******************************************************************************/
 
 #include <Arduino.h>
@@ -64,6 +70,16 @@ int historyIdx = 0, logIdx = 0;
 
 unsigned long laatsteTouch = 0, laatsteLDR = 0, laatsteMqttPoging = 0, ldrStartTijd = 0;
 bool ldrBezig = false;
+bool otaActief = false;
+int laatsteOtaPercentage = -1;
+
+void herstelTouchSpi() {
+  // analogRead() ontkoppelt de gedeelde GPIO39 van VSPI-MISO; bouw de touchbus opnieuw op.
+  mySpi.end();
+  mySpi.begin(XPT2046_CLK, XPT2046_MISO, XPT2046_MOSI, XPT2046_CS);
+  ts.begin(mySpi);
+  ts.setRotation(1);
+}
 
 void setLedKleur(bool r, bool g, bool b) {
   digitalWrite(LED_R, r ? LOW : HIGH);
@@ -186,29 +202,61 @@ void tekenAlarm() {
 void setupOTA() {
   ArduinoOTA.setHostname("CYD-Smart-Dashboard");
   ArduinoOTA.onStart([]() {
+    // Tijdens OTA krijgt ArduinoOTA exclusief de loop en het TFT-scherm.
+    otaActief = true;
+    laatsteOtaPercentage = -1;
+    ldrBezig = false;
     tft.fillScreen(TFT_BLACK);
     tft.setTextDatum(MC_DATUM);
     tft.setTextColor(TFT_WHITE);
     tft.setTextSize(2);
-    tft.drawString("OTA UPDATE START", 160, 100);
+    tft.drawString("OTA UPDATE", 160, 70);
+    tft.drawString("Uploading...", 160, 105);
     tft.drawRect(50, 140, 220, 20, TFT_WHITE);
   });
   ArduinoOTA.onEnd([]() {
-    tft.fillScreen(TFT_GREEN);
-    tft.setTextColor(TFT_BLACK);
-    tft.drawString("UPDATE SUCCESS!", 160, 120);
-    // Geen delay nodig, de herstart volgt direct
+    otaActief = true;
+    laatsteOtaPercentage = 100;
+    tft.fillRect(52, 142, 216, 16, TFT_SKYBLUE);
+    tft.setTextColor(TFT_WHITE, TFT_BLACK);
+    tft.setTextSize(1);
+    tft.drawString("100%", 160, 175);
+    tft.setTextColor(TFT_GREEN, TFT_BLACK);
+    tft.setTextSize(2);
+    tft.drawString("Upload voltooid", 160, 210);
+    delay(750);
   });
   ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
-    int percentage = (progress / (total / 100));
+    int percentage = total > 0
+      ? static_cast<int>((static_cast<uint64_t>(progress) * 100U) / total)
+      : 0;
+    if (percentage == laatsteOtaPercentage) return;
+
+    laatsteOtaPercentage = percentage;
+    tft.fillRect(52, 142, 216, 16, TFT_BLACK);
     tft.fillRect(52, 142, map(percentage, 0, 100, 0, 216), 16, TFT_SKYBLUE);
+    tft.fillRect(130, 166, 60, 18, TFT_BLACK);
     tft.setTextSize(1);
     tft.setTextColor(TFT_WHITE, TFT_BLACK);
     tft.drawString(String(percentage) + "%", 160, 175);
   });
   ArduinoOTA.onError([](ota_error_t error) {
     tft.fillScreen(TFT_RED);
-    tft.drawString("OTA ERROR!", 160, 120);
+    tft.setTextDatum(MC_DATUM);
+    tft.setTextColor(TFT_WHITE, TFT_RED);
+    tft.setTextSize(2);
+    tft.drawString("OTA fout", 160, 100);
+    tft.setTextSize(1);
+    tft.drawString("Foutcode: " + String(static_cast<int>(error)), 160, 140);
+    delay(750);
+
+    otaActief = false;
+    laatsteOtaPercentage = -1;
+    if (currentScreen == HOME) tekenHome();
+    else if (currentScreen == TRENDS) tekenTrends();
+    else if (currentScreen == ACTIVITY) tekenActivity();
+    else if (currentScreen == DIALS) tekenDials();
+    else if (currentScreen == ALARM_SCR) tekenAlarm();
   });
   ArduinoOTA.begin();
 }
@@ -260,6 +308,11 @@ void setup() {
 void loop() {
   ArduinoOTA.handle();
 
+  // Blokkeer MQTT, touch, LDR en gewone schermupdates zolang OTA actief is.
+  if (otaActief) {
+    return;
+  }
+
   // Non-blocking WiFi en MQTT beheer
   if (WiFi.status() == WL_CONNECTED) {
     if (!client.connected()) {
@@ -276,7 +329,12 @@ void loop() {
     }
   }
 
-  if (digitalRead(XPT2046_IRQ) == LOW && ts.touched()) {
+  bool touchActief = false;
+  if (!ldrBezig && digitalRead(XPT2046_IRQ) == LOW) {
+    touchActief = ts.touched();
+  }
+
+  if (touchActief) {
     TS_Point p = ts.getPoint();
     int tx = map(p.x, 260, 3623, 0, 320);
     int ty = map(p.y, 324, 3807, 0, 240);
@@ -294,18 +352,23 @@ void loop() {
       laatsteTouch = millis();
     }
   } 
-  // Non-blocking LDR uitlezing (Pin 39 is gedeeld met MISO)
+  // GPIO39 wordt gedeeld door de LDR-ingang en XPT2046 MISO.
   unsigned long nu = millis();
-  if (!ldrBezig && nu - laatsteLDR > 1000) {
-    pinMode(LDR_PIN, ANALOG);
+  if (!ldrBezig && nu - laatsteLDR > 1000 &&
+      digitalRead(XPT2046_IRQ) == HIGH && !touchActief) {
     ldrStartTijd = nu;
     ldrBezig = true;
   }
-  
+
   if (ldrBezig && nu - ldrStartTijd >= 2) {
-    ldrWaarde = analogRead(LDR_PIN);
-    pinMode(LDR_PIN, INPUT); // Terugzetten voor SPI/Touch
+    // Controleer IRQ opnieuw: een touch kan tijdens de korte wachttijd zijn begonnen.
+    if (digitalRead(XPT2046_IRQ) == HIGH) {
+      pinMode(LDR_PIN, ANALOG);
+      ldrWaarde = analogRead(LDR_PIN);
+      herstelTouchSpi();
+      laatsteLDR = nu;
+    }
+    // Bij annuleren blijft de vorige geldige LDR-waarde behouden.
     ldrBezig = false;
-    laatsteLDR = nu;
   }
 }
