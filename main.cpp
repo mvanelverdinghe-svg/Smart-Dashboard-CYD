@@ -1,7 +1,7 @@
 /*******************************************************************************
  * PROJECT: ESP32 CYD (Cheap Yellow Display) - Smart Home Dashboard
  * HARDWARE: ESP32-2432S028R (2.8" ILI9341 TFT + XPT2046 Touch)
- * VERSION: 2.1 (MQTT, USB/OTA updates, 4-screen UI)
+ * VERSION: 2.2 (MV_ESP connectivity/health, USB/OTA updates, 4-screen UI)
  * 
  * --- HARDWARE CONFIGURATION ---
  * 1. DISPLAY: ILI9341 (SPI) | Rotation: 1 (Landscape) | Inversion: ON
@@ -10,7 +10,9 @@
  * 4. RGB LED: Red: 4, Green: 17, Blue: 16 (Active Low: LOW=ON, HIGH=OFF)
  *
  * --- CURRENT FIRMWARE ---
- * - Non-blocking WiFi, MQTT, touch and periodic LDR handling
+ * - Shared MV_ESP modules: MVWiFi, MqttManager and MVHealth
+ * - Project-specific CYD code: display drawing, pages, touch handling and calibration
+ * - Non-blocking connectivity, touch and periodic LDR handling
  * - Explicit touch-SPI recovery after each LDR analogRead() on shared GPIO39
  * - Exclusive OTA display mode with progress, success and error feedback
  * - PlatformIO environments: cyd (USB/esptool) and cyd_ota (network/espota)
@@ -21,9 +23,11 @@
 #include <XPT2046_Touchscreen.h>
 #include <TFT_eSPI.h>
 #include <WiFi.h>
-#include <PubSubClient.h>
 #include <ArduinoJson.h>
 #include <ArduinoOTA.h>
+#include <MqttManager.h>
+#include <MVHealth.h>
+#include <MVWiFi.h>
 #include "include/secrets.h"
 
 
@@ -45,13 +49,19 @@ const char* password = SECRET_PASS;
 const char* mqtt_server = SECRET_MQTT;
 const char* topic_data = "esp32/cyd/data";
 const char* topic_alarm = "esp32/cyd/alarm";
+const unsigned long HEALTH_INTERVAL_MS = 300000;
 
 // --- OBJECTEN ---
 SPIClass mySpi = SPIClass(VSPI);
 XPT2046_Touchscreen ts(XPT2046_CS, XPT2046_IRQ);
 TFT_eSPI tft = TFT_eSPI();
-WiFiClient espClient;
-PubSubClient client(espClient);
+WiFiClient wifiClient;
+MVWiFi mvWifi(ssid, password);
+MqttConfig mqttConfig = {
+  mqtt_server, 1883, "", "", "ESP32_CYD_Client", "esp32/cyd", 5000
+};
+MqttManager mqttManager(wifiClient, mqttConfig);
+MVHealth health("cyd", "2.2", "ESP32");
 
 // --- STATE MANAGEMENT ---
 enum Screen { HOME, TRENDS, ACTIVITY, DIALS, ALARM_SCR };
@@ -68,9 +78,11 @@ struct LogEntry { float t; int p; int s; String time; };
 LogEntry activityLog[5];
 int historyIdx = 0, logIdx = 0;
 
-unsigned long laatsteTouch = 0, laatsteLDR = 0, laatsteMqttPoging = 0, ldrStartTijd = 0;
+unsigned long laatsteTouch = 0, laatsteLDR = 0, ldrStartTijd = 0;
+unsigned long laatsteHealthPublicatie = 0;
 bool ldrBezig = false;
 bool otaActief = false;
+bool mqttWasVerbonden = false;
 int laatsteOtaPercentage = -1;
 
 void herstelTouchSpi() {
@@ -88,7 +100,7 @@ void setLedKleur(bool r, bool g, bool b) {
 }
 
 void tekenVerbindingsStatus() {
-  uint16_t statusKleur = (client.connected()) ? TFT_GREEN : TFT_RED;
+  uint16_t statusKleur = mqttManager.isConnected() ? TFT_GREEN : TFT_RED;
   tft.fillCircle(305, 15, 4, statusKleur);
   tft.drawCircle(305, 15, 5, TFT_WHITE);
 }
@@ -261,8 +273,8 @@ void setupOTA() {
   ArduinoOTA.begin();
 }
 
-void callback(char* topic, byte* payload, unsigned int length) {
-  if (String(topic) == topic_data) {
+void callback(const String& topic, const String& payload) {
+  if (topic == topic_data) {
     JsonDocument doc; deserializeJson(doc, payload);
     curTemp = doc["temp"]; curPower = doc["power"]; curSolar = doc["solar"];
     curGas = doc["dgas"]; curElek = doc["delek"];
@@ -279,10 +291,9 @@ void callback(char* topic, byte* payload, unsigned int length) {
       else if (currentScreen == DIALS) tekenDials();
     }
   } 
-  else if (String(topic) == topic_alarm) {
-    String msg = ""; for (int i = 0; i < length; i++) msg += (char)payload[i];
-    if (msg == "ON" && !alarmAcknowledged) tekenAlarm();
-    else if (msg == "OFF") { 
+  else if (topic == topic_alarm) {
+    if (payload == "ON" && !alarmAcknowledged) tekenAlarm();
+    else if (payload == "OFF") {
       alarmAcknowledged = false; 
       if (currentScreen == ALARM_SCR) {
         currentScreen = HOME; tekenHome(); setLedKleur(0,0,0); 
@@ -299,9 +310,13 @@ void setup() {
   mySpi.begin(XPT2046_CLK, XPT2046_MISO, XPT2046_MOSI, XPT2046_CS);
   ts.begin(mySpi); ts.setRotation(1);
   tft.init(); tft.setRotation(1); tft.invertDisplay(true);
-  WiFi.begin(ssid, password);
+  mvWifi.begin();
   setupOTA();
-  client.setServer(mqtt_server, 1883); client.setCallback(callback);
+  mqttManager.setMessageCallback(callback);
+  mqttManager.subscribe(topic_data);
+  mqttManager.subscribe(topic_alarm);
+  health.begin(mqttManager);
+  mqttManager.begin();
   tekenHome();
 }
 
@@ -313,20 +328,19 @@ void loop() {
     return;
   }
 
-  // Non-blocking WiFi en MQTT beheer
-  if (WiFi.status() == WL_CONNECTED) {
-    if (!client.connected()) {
-      unsigned long nu = millis();
-      if (nu - laatsteMqttPoging > 5000) { // Probeer elke 5 seconden
-        laatsteMqttPoging = nu;
-        if (client.connect("ESP32_CYD_Client")) { 
-          client.subscribe(topic_data); 
-          client.subscribe(topic_alarm); 
-        }
-      }
-    } else {
-      client.loop();
-    }
+  mvWifi.loop();
+  mqttManager.loop();
+
+  unsigned long nu = millis();
+  bool mqttIsVerbonden = mqttManager.isConnected();
+  if (mqttIsVerbonden && !mqttWasVerbonden && health.publish()) {
+    laatsteHealthPublicatie = nu;
+  }
+  mqttWasVerbonden = mqttIsVerbonden;
+
+  if (mqttIsVerbonden &&
+      nu - laatsteHealthPublicatie >= HEALTH_INTERVAL_MS && health.publish()) {
+    laatsteHealthPublicatie = nu;
   }
 
   bool touchActief = false;
@@ -353,7 +367,6 @@ void loop() {
     }
   } 
   // GPIO39 wordt gedeeld door de LDR-ingang en XPT2046 MISO.
-  unsigned long nu = millis();
   if (!ldrBezig && nu - laatsteLDR > 1000 &&
       digitalRead(XPT2046_IRQ) == HIGH && !touchActief) {
     ldrStartTijd = nu;

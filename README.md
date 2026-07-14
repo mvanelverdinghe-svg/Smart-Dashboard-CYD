@@ -17,7 +17,8 @@ A professional, multi-screen monitoring dashboard for the **ESP32-2432S028R** (C
   - **Logbook**: Recent activity table with timestamps.
   - **Meters**: Visual gauges for daily Gas (m³) and Electricity (kWh) usage.
 - **Smart Connectivity**:
-  - Full **MQTT** integration for data and alarms.
+  - Shared **MVWiFi** and **MqttManager** integration for data and alarms.
+  - Retained online/offline status and periodic retained health via **MVHealth**.
   - USB uploads through `esptool` and OTA uploads through `espota`.
   - Exclusive **OTA display mode** with progress, success, and error feedback.
   - Connection status indicator (Green/Red LED on screen).
@@ -41,7 +42,7 @@ A professional, multi-screen monitoring dashboard for the **ESP32-2432S028R** (C
 
 - `TFT_eSPI` (Display driver)
 - `XPT2046_Touchscreen` (Touch driver)
-- `PubSubClient` (MQTT)
+- `MV_ESP` (`MVWiFi`, `MqttManager`, `MVHealth`)
 - `ArduinoJson` (JSON parsing)
 - `ArduinoOTA` (Wireless updates)
 
@@ -77,6 +78,10 @@ The dashboard expects a JSON payload on the `esp32/cyd/data` topic:
 
 Alarm commands use the existing `esp32/cyd/alarm` topic.
 
+Connectivity status is retained on `esp32/cyd/status`. Health is retained on
+`esp32/cyd/health`, is refreshed every five minutes, and can be requested by publishing
+`PING` to `esp32/cyd/health/cmd`.
+
 ## 🔌 Upload environments
 
 - `cyd`: USB upload using `esptool`.
@@ -104,6 +109,12 @@ pio run -e cyd_ota -t upload
 During a real OTA upload the TFT shows `OTA UPDATE`, a progress bar and percentage. MQTT screen
 updates, touch navigation, and LDR measurements are temporarily suspended. At completion it shows
 `Upload voltooid`; OTA errors display their error code before the normal screen is restored.
+
+## ♻️ Possible future reuse
+
+The display drawing, pages, layout and touch handling remain project-specific CYD code. Reusable
+display components should only move to a separate shared library when a second project needs the
+same components and their common interface can be demonstrated without changing CYD behavior.
 
 ## 📝 License
 
