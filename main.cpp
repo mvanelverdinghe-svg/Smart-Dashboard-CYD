@@ -51,6 +51,7 @@ const char* mqtt_server = SECRET_MQTT;
 const char* topic_data = "esp32/cyd/data";
 const char* topic_alarm = "esp32/cyd/alarm";
 const unsigned long HEALTH_INTERVAL_MS = 300000;
+const unsigned long OTA_ERROR_DISPLAY_MS = 750;
 
 // --- OBJECTEN ---
 SPIClass mySpi = SPIClass(VSPI);
@@ -82,8 +83,9 @@ int historyIdx = 0, logIdx = 0;
 
 unsigned long laatsteTouch = 0, laatsteLDR = 0, ldrStartTijd = 0;
 unsigned long laatsteHealthPublicatie = 0;
+unsigned long otaFoutStartTijd = 0;
 bool ldrBezig = false;
-bool otaActief = false;
+bool otaFoutWeergaveActief = false;
 bool mqttWasVerbonden = false;
 int laatsteOtaPercentage = -1;
 
@@ -213,10 +215,18 @@ void tekenAlarm() {
   tft.setTextColor(TFT_RED); tft.drawString("ACKNOWLEDGE", 160, 195);
 }
 
+void herstelSchermNaOtaFout() {
+  if (currentScreen == HOME) tekenHome();
+  else if (currentScreen == TRENDS) tekenTrends();
+  else if (currentScreen == ACTIVITY) tekenActivity();
+  else if (currentScreen == DIALS) tekenDials();
+  else if (currentScreen == ALARM_SCR) tekenAlarm();
+}
+
 void setupOTA() {
   ota.onStart([](void*) {
     // Tijdens OTA krijgt MVOTA exclusief de loop en het TFT-scherm.
-    otaActief = true;
+    otaFoutWeergaveActief = false;
     laatsteOtaPercentage = -1;
     ldrBezig = false;
     tft.fillScreen(TFT_BLACK);
@@ -228,7 +238,6 @@ void setupOTA() {
     tft.drawRect(50, 140, 220, 20, TFT_WHITE);
   });
   ota.onEnd([](void*) {
-    otaActief = true;
     laatsteOtaPercentage = 100;
     tft.fillRect(52, 142, 216, 16, TFT_SKYBLUE);
     tft.setTextColor(TFT_WHITE, TFT_BLACK);
@@ -237,7 +246,6 @@ void setupOTA() {
     tft.setTextColor(TFT_GREEN, TFT_BLACK);
     tft.setTextSize(2);
     tft.drawString("Upload voltooid", 160, 210);
-    delay(750);
   });
   ota.onProgress([](unsigned int progress, unsigned int total, void*) {
     int percentage = total > 0
@@ -261,15 +269,9 @@ void setupOTA() {
     tft.drawString("OTA fout", 160, 100);
     tft.setTextSize(1);
     tft.drawString("Foutcode: " + String(static_cast<int>(error)), 160, 140);
-    delay(750);
-
-    otaActief = false;
+    otaFoutStartTijd = millis();
+    otaFoutWeergaveActief = true;
     laatsteOtaPercentage = -1;
-    if (currentScreen == HOME) tekenHome();
-    else if (currentScreen == TRENDS) tekenTrends();
-    else if (currentScreen == ACTIVITY) tekenActivity();
-    else if (currentScreen == DIALS) tekenDials();
-    else if (currentScreen == ALARM_SCR) tekenAlarm();
   });
 }
 
@@ -312,9 +314,7 @@ void setup() {
   tft.init(); tft.setRotation(1); tft.invertDisplay(true);
   mvWifi.begin();
   setupOTA();
-  if (mvWifi.isConnected()) {
-    ota.begin();
-  }
+  ota.begin();
   mqttManager.setMessageCallback(callback);
   mqttManager.subscribe(topic_data);
   mqttManager.subscribe(topic_alarm);
@@ -325,16 +325,20 @@ void setup() {
 
 void loop() {
   mvWifi.loop();
-
-  if (mvWifi.isConnected()) {
-    ota.begin();
-  }
-
   ota.handle();
 
   // Blokkeer MQTT, touch, LDR en gewone schermupdates zolang OTA actief is.
-  if (otaActief) {
+  if (ota.isUpdating()) {
     return;
+  }
+
+  if (otaFoutWeergaveActief) {
+    if (millis() - otaFoutStartTijd >= OTA_ERROR_DISPLAY_MS) {
+      otaFoutWeergaveActief = false;
+      herstelSchermNaOtaFout();
+    } else {
+      return;
+    }
   }
 
   mqttManager.loop();
