@@ -1,7 +1,7 @@
 /*******************************************************************************
  * PROJECT: ESP32 CYD (Cheap Yellow Display) - Smart Home Dashboard
  * HARDWARE: ESP32-2432S028R (2.8" ILI9341 TFT + XPT2046 Touch)
- * VERSION: 2.2 (MV_ESP connectivity/health, USB/OTA updates, 4-screen UI)
+ * VERSION: 2.3 (MV_ESP connectivity/health/OTA, USB/OTA updates, 4-screen UI)
  * 
  * --- HARDWARE CONFIGURATION ---
  * 1. DISPLAY: ILI9341 (SPI) | Rotation: 1 (Landscape) | Inversion: ON
@@ -10,11 +10,12 @@
  * 4. RGB LED: Red: 4, Green: 17, Blue: 16 (Active Low: LOW=ON, HIGH=OFF)
  *
  * --- CURRENT FIRMWARE ---
- * - Shared MV_ESP modules: MVWiFi, MqttManager and MVHealth
+ * - Shared MV_ESP modules: MVWiFi, MqttManager, MVHealth and MVOTA
  * - Project-specific CYD code: display drawing, pages, touch handling and calibration
  * - Non-blocking connectivity, touch and periodic LDR handling
  * - Explicit touch-SPI recovery after each LDR analogRead() on shared GPIO39
- * - Exclusive OTA display mode with progress, success and error feedback
+ * - MVOTA hostname: CYD-Smart-Dashboard (no OTA password configured)
+ * - Exclusive MVOTA display mode with progress, success and error feedback
  * - PlatformIO environments: cyd (USB/esptool) and cyd_ota (network/espota)
  *******************************************************************************/
 
@@ -24,9 +25,9 @@
 #include <TFT_eSPI.h>
 #include <WiFi.h>
 #include <ArduinoJson.h>
-#include <ArduinoOTA.h>
 #include <MqttManager.h>
 #include <MVHealth.h>
+#include <MVOTA.h>
 #include <MVWiFi.h>
 #include "include/secrets.h"
 
@@ -61,7 +62,8 @@ MqttConfig mqttConfig = {
   mqtt_server, 1883, "", "", "ESP32_CYD_Client", "esp32/cyd", 5000
 };
 MqttManager mqttManager(wifiClient, mqttConfig);
-MVHealth health("cyd", "2.2", "ESP32");
+MVHealth health("cyd", "2.3", "ESP32");
+MVOTA ota("CYD-Smart-Dashboard");
 
 // --- STATE MANAGEMENT ---
 enum Screen { HOME, TRENDS, ACTIVITY, DIALS, ALARM_SCR };
@@ -212,9 +214,8 @@ void tekenAlarm() {
 }
 
 void setupOTA() {
-  ArduinoOTA.setHostname("CYD-Smart-Dashboard");
-  ArduinoOTA.onStart([]() {
-    // Tijdens OTA krijgt ArduinoOTA exclusief de loop en het TFT-scherm.
+  ota.onStart([](void*) {
+    // Tijdens OTA krijgt MVOTA exclusief de loop en het TFT-scherm.
     otaActief = true;
     laatsteOtaPercentage = -1;
     ldrBezig = false;
@@ -226,7 +227,7 @@ void setupOTA() {
     tft.drawString("Uploading...", 160, 105);
     tft.drawRect(50, 140, 220, 20, TFT_WHITE);
   });
-  ArduinoOTA.onEnd([]() {
+  ota.onEnd([](void*) {
     otaActief = true;
     laatsteOtaPercentage = 100;
     tft.fillRect(52, 142, 216, 16, TFT_SKYBLUE);
@@ -238,7 +239,7 @@ void setupOTA() {
     tft.drawString("Upload voltooid", 160, 210);
     delay(750);
   });
-  ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
+  ota.onProgress([](unsigned int progress, unsigned int total, void*) {
     int percentage = total > 0
       ? static_cast<int>((static_cast<uint64_t>(progress) * 100U) / total)
       : 0;
@@ -252,7 +253,7 @@ void setupOTA() {
     tft.setTextColor(TFT_WHITE, TFT_BLACK);
     tft.drawString(String(percentage) + "%", 160, 175);
   });
-  ArduinoOTA.onError([](ota_error_t error) {
+  ota.onError([](MVOTA::ErrorCode error, void*) {
     tft.fillScreen(TFT_RED);
     tft.setTextDatum(MC_DATUM);
     tft.setTextColor(TFT_WHITE, TFT_RED);
@@ -270,7 +271,6 @@ void setupOTA() {
     else if (currentScreen == DIALS) tekenDials();
     else if (currentScreen == ALARM_SCR) tekenAlarm();
   });
-  ArduinoOTA.begin();
 }
 
 void callback(const String& topic, const String& payload) {
@@ -312,6 +312,9 @@ void setup() {
   tft.init(); tft.setRotation(1); tft.invertDisplay(true);
   mvWifi.begin();
   setupOTA();
+  if (mvWifi.isConnected()) {
+    ota.begin();
+  }
   mqttManager.setMessageCallback(callback);
   mqttManager.subscribe(topic_data);
   mqttManager.subscribe(topic_alarm);
@@ -321,14 +324,19 @@ void setup() {
 }
 
 void loop() {
-  ArduinoOTA.handle();
+  mvWifi.loop();
+
+  if (mvWifi.isConnected()) {
+    ota.begin();
+  }
+
+  ota.handle();
 
   // Blokkeer MQTT, touch, LDR en gewone schermupdates zolang OTA actief is.
   if (otaActief) {
     return;
   }
 
-  mvWifi.loop();
   mqttManager.loop();
 
   unsigned long nu = millis();

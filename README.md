@@ -2,6 +2,8 @@
 
 A professional, multi-screen monitoring dashboard for the **ESP32-2432S028R** (Cheap Yellow Display). This project integrates with **Node-RED** via **MQTT** to display real-time energy, solar, and environmental data.
 
+Current firmware version: **2.3**.
+
 ![Dashboard](images/Start_20260328.jpg)
 ![Dashboard](images/Table_20260328.jpg)
 ![Dashboard](images/Oscil_20260328.jpg)
@@ -19,8 +21,9 @@ A professional, multi-screen monitoring dashboard for the **ESP32-2432S028R** (C
 - **Smart Connectivity**:
   - Shared **MVWiFi** and **MqttManager** integration for data and alarms.
   - Retained online/offline status and periodic retained health via **MVHealth**.
+  - Central **MVOTA** integration with hostname `CYD-Smart-Dashboard` (no OTA password configured).
   - USB uploads through `esptool` and OTA uploads through `espota`.
-  - Exclusive **OTA display mode** with progress, success, and error feedback.
+  - Exclusive **MVOTA display mode** with progress, success, and error feedback.
   - Connection status indicator (Green/Red LED on screen).
 - **Hardware Optimizations**:
   - **LDR/MISO Fix**: IRQ-guarded hybrid switching on GPIO39, followed by explicit touch-SPI recovery.
@@ -42,9 +45,8 @@ A professional, multi-screen monitoring dashboard for the **ESP32-2432S028R** (C
 
 - `TFT_eSPI` (Display driver)
 - `XPT2046_Touchscreen` (Touch driver)
-- `MV_ESP` (`MVWiFi`, `MqttManager`, `MVHealth`)
+- `MV_ESP` (`MVWiFi`, `MqttManager`, `MVHealth`, `MVOTA`)
 - `ArduinoJson` (JSON parsing)
-- `ArduinoOTA` (Wireless updates)
 
 ---
 
@@ -110,6 +112,10 @@ During a real OTA upload the TFT shows `OTA UPDATE`, a progress bar and percenta
 updates, touch navigation, and LDR measurements are temporarily suspended. At completion it shows
 `Upload voltooid`; OTA errors display their error code before the normal screen is restored.
 
+The firmware registers its existing start, end, progress, and error callbacks through the shared
+`MVOTA` library. MVOTA is initialized only when `MVWiFi` reports an active connection; startup does
+not wait in a blocking loop.
+
 ## ♻️ Possible future reuse
 
 The display drawing, pages, layout and touch handling remain project-specific CYD code. Reusable
@@ -118,6 +124,7 @@ same components and their common interface can be demonstrated without changing 
 
 ## 📝 License
 
-This project is for personal home automation use. Feel free to modify and expand it. Thanks to Paul
+This project is for personal home automation use. Feel free to modify 
+and expand it. Thanks to Paul
 Stoffregen and others whose published information about the CYD hardware helped resolve the shared
 GPIO39 LDR/touch-MISO behavior.
